@@ -8,7 +8,7 @@ from . import divulga, loaders
 from .config import CARGOS_PRINCIPAIS, PADROES_ARQUIVO, PASTA_TABELAS, PASTA_ZIP, ROTULOS_CARGO, UFS
 from .http import log
 
-CARGOS_ANALISE = {2024: (11, 13), 2026: (1, 3, 5, 6)}
+CARGOS_ANALISE = {2024: (11, 13), 2026: (1, 3, 5, 6, 7, 8)}
 ELEICAO_PRINCIPAL = {2024: 619, 2026: 6257}
 
 
@@ -156,8 +156,8 @@ def resultado_por_candidato(
         .sort_values("votos", ascending=False)
         .reset_index(drop=True)
     )
-    total = agregado["votos_validos"].sum()
-    agregado["pct"] = 100.0 * agregado["votos_validos"] / total if total else 0.0
+    total = agregado["votos"].sum()
+    agregado["pct"] = 100.0 * agregado["votos"] / total if total else 0.0
     agregado["cargo"] = ROTULOS_CARGO.get(str(cargo_cd), str(cargo_cd))
     return agregado
 
@@ -180,23 +180,32 @@ def candidatos_eleitos(quadro: pd.DataFrame, cargo_cd: int) -> pd.DataFrame:
     )
 
 
-def vencedores_por_uf(quadro: pd.DataFrame, cargo_cd: int) -> pd.DataFrame:
+def candidatos_por_uf(quadro: pd.DataFrame, cargo_cd: int) -> pd.DataFrame:
+    """Todos os candidatos de cada UF, ordenados por votos, com posicao e percentual."""
     if quadro.empty:
         return pd.DataFrame()
     dados = quadro[quadro["cargo_cd"] == cargo_cd]
     if dados.empty:
         return pd.DataFrame()
     por_candidato = (
-        dados.groupby(["uf", "partido", "candidato_urna"], observed=True, dropna=False)[["votos", "votos_validos"]]
-        .sum()
+        dados.groupby(["uf", "partido", "candidato_urna"], observed=True, dropna=False)
+        .agg(votos=("votos", "sum"), votos_validos=("votos_validos", "sum"), situacao=("situacao", "first"))
         .reset_index()
     )
-    totais_uf = por_candidato.groupby("uf", observed=True)["votos_validos"].sum().rename("validos_uf")
+    totais_uf = por_candidato.groupby("uf", observed=True)["votos"].sum().rename("total_uf")
     por_candidato = por_candidato.join(totais_uf, on="uf")
-    por_candidato["pct"] = 100.0 * por_candidato["votos_validos"] / por_candidato["validos_uf"]
-    indice = por_candidato.groupby("uf", observed=True)["votos"].idxmax()
-    vencedores = por_candidato.loc[indice].sort_values("uf").reset_index(drop=True)
-    vencedores["cargo"] = ROTULOS_CARGO.get(str(cargo_cd), str(cargo_cd))
+    por_candidato["pct"] = 100.0 * por_candidato["votos"] / por_candidato["total_uf"]
+    por_candidato = por_candidato.sort_values(["uf", "votos"], ascending=[True, False]).reset_index(drop=True)
+    por_candidato["posicao"] = por_candidato.groupby("uf", observed=True).cumcount() + 1
+    por_candidato["cargo"] = ROTULOS_CARGO.get(str(cargo_cd), str(cargo_cd))
+    return por_candidato
+
+
+def vencedores_por_uf(quadro: pd.DataFrame, cargo_cd: int) -> pd.DataFrame:
+    candidatos = candidatos_por_uf(quadro, cargo_cd)
+    if candidatos.empty:
+        return pd.DataFrame()
+    vencedores = candidatos[candidatos["posicao"] == 1].copy().reset_index(drop=True)
     return vencedores
 
 
@@ -223,8 +232,16 @@ def tabela_partidos(ano: int, por_uf: bool = False, force: bool = False) -> pd.D
     votos = tabela_votos(ano)
     if votos.empty:
         return pd.DataFrame()
-    chaves = (["uf"] if por_uf else []) + ["cargo_cd", "cargo", "partido", "partido_nome"]
-    agregado = votos.groupby(chaves, observed=True, dropna=False)["votos"].sum().reset_index()
+    votos = votos.copy()
+    votos["chave"] = votos["partido"].astype(str).str.replace(r"\s+", "", regex=True).str.upper()
+    base = (["uf"] if por_uf else []) + ["cargo_cd", "cargo", "chave"]
+    agregado = votos.groupby(base, observed=True, dropna=False)["votos"].sum().reset_index()
+    detalhe = votos.groupby(base + ["partido", "partido_nome"], observed=True, dropna=False)["votos"].sum().reset_index()
+    principais = detalhe.loc[
+        detalhe.groupby(base, observed=True, dropna=False)["votos"].idxmax(), base + ["partido", "partido_nome"]
+    ]
+    colunas = (["uf"] if por_uf else []) + ["cargo_cd", "cargo", "partido", "partido_nome", "votos"]
+    agregado = agregado.merge(principais, on=base)[colunas]
     grupos = ["cargo_cd"] + (["uf"] if por_uf else [])
     totais = agregado.groupby(grupos, observed=True, dropna=False)["votos"].transform("sum")
     agregado["pct"] = (100.0 * agregado["votos"] / totais.where(totais > 0)).fillna(0.0).round(2)
@@ -279,6 +296,65 @@ def tabela_eleitos(ano: int, force: bool = False) -> pd.DataFrame:
     return agregado
 
 
+def tabela_senado_composicao(force: bool = False) -> pd.DataFrame:
+    """Composição das 81 cadeiras do Senado após 2026 (classe 2026-2034 + meio mandato 2022-2030)."""
+    destino = PASTA_TABELAS / "senado_composicao.csv"
+    if destino.exists() and not force:
+        log(f"  [ok] reutilizando {destino.name}")
+        return pd.read_csv(destino)
+
+    colunas = [
+        "classe",
+        "cargo",
+        "uf",
+        "candidato_sq",
+        "candidato_urna",
+        "candidato",
+        "partido",
+        "partido_nome",
+        "nascimento",
+        "idade",
+        "genero",
+        "raca",
+        "escolaridade",
+        "votos",
+    ]
+    quadros = []
+
+    eleitos = tabela_eleitos(2026, force=force)
+    if not eleitos.empty:
+        classe26 = eleitos[eleitos["cargo_cd"] == 5].copy()
+        if not classe26.empty:
+            classe26["classe"] = 2026
+            quadros.append(classe26[[c for c in colunas if c in classe26.columns]])
+
+    zip22 = caminho_zip(2022, "consulta_cand")
+    if zip22.exists():
+        cadastro = loaders.ler_cadastro_candidatos(zip22, cargos=(5,))
+        situacao = cadastro["situacao"].astype(str).str.upper().str.strip()
+        classe22 = cadastro[situacao.str.startswith("ELEITO")].drop_duplicates("candidato_sq").copy()
+        if not classe22.empty:
+            classe22["idade"] = calcular_idade(classe22, 2026)
+            classe22["classe"] = 2022
+            classe22["cargo"] = "Senador"
+            classe22["votos"] = pd.NA
+            quadros.append(classe22[[c for c in colunas if c in classe22.columns]])
+    else:
+        log(f"  [aviso] {zip22.name} ausente; classe 2022 do senado indisponivel")
+
+    if not quadros:
+        return pd.DataFrame(columns=colunas)
+    quadro = pd.concat(quadros, ignore_index=True, sort=False)
+    for coluna in colunas:
+        if coluna not in quadro:
+            quadro[coluna] = pd.NA
+    quadro = quadro[colunas].sort_values(["classe", "uf"]).reset_index(drop=True)
+    PASTA_TABELAS.mkdir(parents=True, exist_ok=True)
+    quadro.to_csv(destino, index=False, encoding="utf-8")
+    log(f"  [ok] {destino.name}: {len(quadro)} cadeiras ({', '.join(str(c) for c in sorted(quadro['classe'].unique()))})")
+    return quadro
+
+
 def montar_pacote(ano: int, force: bool = False) -> dict[str, pd.DataFrame]:
     return {
         "votos": tabela_votos(ano, force=force),
@@ -287,6 +363,7 @@ def montar_pacote(ano: int, force: bool = False) -> dict[str, pd.DataFrame]:
         "partidos": tabela_partidos(ano, force=force),
         "partidos_estado": tabela_partidos(ano, por_uf=True, force=force),
         "eleitos": tabela_eleitos(ano, force=force),
+        "senado": tabela_senado_composicao(force=force),
     }
 
 

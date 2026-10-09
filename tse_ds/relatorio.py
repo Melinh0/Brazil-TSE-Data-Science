@@ -318,7 +318,7 @@ def gerar(pacotes: dict[int, dict[str, pd.DataFrame]]) -> Path:
                 partes.append(
                     _tabela_md(
                         presidente.head(10),
-                        ["candidato_urna", "partido", "votos_validos", "pct"],
+                        ["candidato_urna", "partido", "votos", "pct"],
                     )
                 )
                 partes.append("")

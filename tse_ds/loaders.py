@@ -177,7 +177,7 @@ def _numericas(colunas: list[str]) -> dict[str, str]:
 def ler_votacao_municipal(
     caminho: Path,
     cargos: tuple[int, ...] | list[int] | None = None,
-    chunksize: int = 400_000,
+    chunksize: int = 150_000,
 ) -> pd.DataFrame:
     caminho = Path(caminho)
     partes: list[pd.DataFrame] = []
@@ -197,6 +197,8 @@ def ler_votacao_municipal(
                 .sum()
                 .reset_index()
             )
+            for coluna in agregado.select_dtypes(include="object").columns:
+                agregado[coluna] = agregado[coluna].astype("category")
             partes.append(agregado)
             total += len(pedaco)
             log(f"  [leitura] {membro}: {total:,} linhas processadas")
@@ -204,7 +206,21 @@ def ler_votacao_municipal(
     if not partes:
         return pd.DataFrame(columns=CHAVES_VOTACAO + ["QT_VOTOS_NOMINAIS", "QT_VOTOS_NOMINAIS_VALIDOS"])
 
+    textos = [
+        coluna
+        for coluna in partes[0].columns
+        if all(isinstance(parte[coluna].dtype, pd.CategoricalDtype) for parte in partes)
+    ]
+    for coluna in textos:
+        unicos: set = set()
+        for parte in partes:
+            unicos.update(parte[coluna].dropna().unique().tolist())
+        dtype = pd.CategoricalDtype(sorted(unicos))
+        for parte in partes:
+            parte[coluna] = parte[coluna].astype(dtype)
+
     quadro = pd.concat(partes, ignore_index=True)
+    partes.clear()
     quadro = (
         quadro.groupby(CHAVES_VOTACAO, dropna=False, observed=True)[
             ["QT_VOTOS_NOMINAIS", "QT_VOTOS_NOMINAIS_VALIDOS"]
