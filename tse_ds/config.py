@@ -13,6 +13,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 PASTA_DADOS = RAIZ / "data"
 PASTA_ZIP = PASTA_DADOS / "zip"
 PASTA_JSON = PASTA_DADOS / "json"
+PASTA_IBGE = PASTA_DADOS / "ibge"
 PASTA_SAIDA = RAIZ / "outputs"
 PASTA_TABELAS = PASTA_SAIDA / "tabelas"
 PASTA_FIGURAS = PASTA_SAIDA / "figuras"
@@ -80,5 +81,5 @@ ROTULOS_CARGO = {
 
 
 def garantir_pastas() -> None:
-    for pasta in (PASTA_DADOS, PASTA_ZIP, PASTA_JSON, PASTA_SAIDA, PASTA_TABELAS, PASTA_FIGURAS):
+    for pasta in (PASTA_DADOS, PASTA_ZIP, PASTA_JSON, PASTA_IBGE, PASTA_SAIDA, PASTA_TABELAS, PASTA_FIGURAS):
         pasta.mkdir(parents=True, exist_ok=True)

@@ -214,6 +214,143 @@ def _secao_eleitos(eleitos: pd.DataFrame, ano: int, votos: pd.DataFrame | None =
     return linhas
 
 
+def _secao_painel_bi(ano: int, pacote: dict[str, pd.DataFrame]) -> list[str]:
+    """Painel executivo (KPIs + insights automáticos) no topo do relatório do ano."""
+    apuracao = pacote.get("apuracao", pd.DataFrame())
+    votos = pacote.get("votos", pd.DataFrame())
+    candidatos = pacote.get("candidatos", pd.DataFrame())
+    eleitos = pacote.get("eleitos", pd.DataFrame())
+    eleitorado = pacote.get("eleitorado", pd.DataFrame())
+    cruzamento = pacote.get("cruzamento", pd.DataFrame())
+    segundo = pacote.get("segundo_turno", pd.DataFrame())
+
+    linhas: list[str] = ["### Painel executivo (BI)", "", "| Indicador | Valor |", "|---|---|"]
+    if not apuracao.empty:
+        eleitores = int(apuracao["eleitores"].sum())
+        comparecimento = int(apuracao["comparecimento"].sum())
+        abstencao = int(apuracao["abstencao"].sum())
+        linhas.append(f"| Eleitores aptos | {_numero(eleitores)} |")
+        linhas.append(f"| Comparecimento | {_numero(comparecimento)} ({100 * comparecimento / eleitores:.1f}%) |")
+        linhas.append(f"| Abstenção | {_numero(abstencao)} ({100 * abstencao / eleitores:.1f}%) |")
+        menor = apuracao.loc[apuracao["pct_comparecimento"].idxmin()]
+        maior = apuracao.loc[apuracao["pct_comparecimento"].idxmax()]
+        linhas.append(f"| Maior / menor comparecimento | {maior['uf']} ({maior['pct_comparecimento']:.1f}%) / {menor['uf']} ({menor['pct_comparecimento']:.1f}%) |")
+    if not votos.empty:
+        brasil = votos[votos["uf"].astype(str).str.upper() != "ZZ"]
+        linhas.append(f"| Municípios apurados | {_numero(brasil['municipio_cd'].nunique())} |")
+        linhas.append(f"| Votos nominais analisados (cargos do estudo) | {_numero(int(brasil['votos'].sum()))} |")
+    if not candidatos.empty:
+        contagem = candidatos["genero"].astype(str).str.upper().str.strip().value_counts()
+        feminino = int(contagem.get("FEMININO", 0))
+        linhas.append(
+            f"| Candidaturas registradas | {_numero(len(candidatos))} "
+            f"({100 * feminino / len(candidatos):.1f}% femininas) |"
+        )
+    if not eleitos.empty:
+        linhas.append(f"| Candidatos eleitos (cargos do estudo) | {_numero(len(eleitos))} |")
+    if not segundo.empty:
+        disputas = segundo.groupby(["uf", "municipio"], observed=True).ngroups
+        votos_2t = int(segundo["votos"].sum())
+        linhas.append(f"| Municípios com 2º turno (prefeito) | {_numero(disputas)} ({_numero(votos_2t)} votos) |")
+    if not cruzamento.empty and "renda_media" in cruzamento:
+        linhas.append(f"| Renda per capita média (Censo 2022) | R$ {_br_cruzamento(cruzamento['renda_media'].median())} (mediana municipal) |")
+    linhas.append("")
+
+    linhas.append("### Insights")
+    linhas.append("")
+    if not apuracao.empty and len(apuracao) > 1:
+        menor = apuracao.loc[apuracao["pct_comparecimento"].idxmin()]
+        maior = apuracao.loc[apuracao["pct_comparecimento"].idxmax()]
+        linhas.append(
+            f"- O comparecimento estadual vai de **{menor['uf']} ({menor['pct_comparecimento']:.1f}%)** "
+            f"a **{maior['uf']} ({maior['pct_comparecimento']:.1f}%)**."
+        )
+    if not eleitorado.empty and (eleitorado["dimensao"] == "faixa_etaria").any():
+        faixas = (
+            eleitorado[eleitorado["dimensao"] == "faixa_etaria"]
+            .groupby("categoria", observed=True)["eleitores"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        linhas.append(
+            f"- A faixa **{faixas.index[0]}** é a maior do eleitorado: "
+            f"{_numero(int(faixas.iloc[0]))} aptos ({100 * faixas.iloc[0] / faixas.sum():.1f}% do total)."
+        )
+    if not eleitorado.empty and (eleitorado["dimensao"] == "genero").any():
+        genero = eleitorado[eleitorado["dimensao"] == "genero"].groupby("categoria", observed=True)["eleitores"].sum()
+        if "FEMININO" in genero.index:
+            linhas.append(
+                f"- Eleitorado majoritariamente **feminino**: {100 * genero['FEMININO'] / genero.sum():.1f}% "
+                f"({_numero(int(genero['FEMININO']))} eleitoras)."
+            )
+    if not cruzamento.empty:
+        if "renda_media" in cruzamento and "pct_comparecimento" in cruzamento:
+            corr = cruzamento["renda_media"].corr(cruzamento["pct_comparecimento"])
+            if pd.notna(corr):
+                sentido = "menor comparecimento" if corr < 0 else "maior comparecimento"
+                linhas.append(
+                    f"- Renda per capita municipal × comparecimento: correlação de Pearson **{corr:+.2f}** "
+                    f"(municípios mais ricos tendem a {sentido})."
+                )
+        if "candidatos_prefeito" in cruzamento and cruzamento["candidatos_prefeito"].notna().any():
+            linhas.append(
+                f"- Cada município teve, em média, **{cruzamento['candidatos_prefeito'].mean():.1f}** candidatos à prefeitura."
+            )
+        if "pct_invalidos" in cruzamento and cruzamento["pct_invalidos"].notna().any():
+            brancos = cruzamento["votos_brancos"].sum()
+            nulos = cruzamento["votos_nulos"].sum()
+            total = brancos + nulos + cruzamento["votos_validos"].sum()
+            linhas.append(
+                f"- Votos em branco e nulos somam **{100 * (brancos + nulos) / total:.1f}%** dos votos registrados "
+                f"({_numero(int(brancos))} brancos e {_numero(int(nulos))} nulos)."
+            )
+    if not segundo.empty and (segundo["cargo_cd"] == 11).any():
+        vencedores = segundo[(segundo["cargo_cd"] == 11) & (segundo["posicao"] == 1)]
+        disputas = segundo.groupby(["uf", "municipio"], observed=True).ngroups
+        margens = vencedores["margem_pct"].dropna()
+        if not margens.empty:
+            apertada = vencedores.loc[margens.idxmin()]
+            linhas.append(
+                f"- **{disputas} prefeituras** foram decididas em 2º turno; a margem média foi de "
+                f"{margens.mean():.1f} p.p. e a disputa mais apertada foi **{apertada['municipio']}/{apertada['uf']}** "
+                f"({apertada['vencedor']}, {_numero(int(apertada['margem_votos']))} votos de diferença, "
+                f"{apertada['margem_pct']:.1f} p.p.)."
+            )
+    if not eleitos.empty and ano == 2024 and "municipio" in eleitos.columns:
+        prefeitos = eleitos[eleitos["cargo_cd"] == 11]
+        if not prefeitos.empty:
+            top = prefeitos.groupby("partido", observed=True)["municipio"].nunique().sort_values(ascending=False)
+            linhas.append(
+                f"- **{top.index[0]}** venceu o maior número de prefeituras: {_numero(int(top.iloc[0]))} municípios."
+            )
+            genero_pref = prefeitos["genero"].astype(str).str.upper().str.strip().value_counts()
+            if "FEMININO" in genero_pref.index:
+                linhas.append(
+                    f"- Entre os {len(prefeitos)} prefeitos eleitos, {int(genero_pref['FEMININO'])} são mulheres "
+                    f"({100 * genero_pref['FEMININO'] / len(prefeitos):.1f}%)."
+                )
+    if not votos.empty and ano == 2026:
+        presidente = votos[(votos["cargo_cd"] == 1) & (votos["uf"].astype(str).str.upper() != "ZZ")]
+        if not presidente.empty:
+            top_cand = presidente.groupby("candidato_urna", observed=True)["votos"].sum().sort_values(ascending=False)
+            linhas.append(
+                f"- Na apuração da presidência (sem resultado final na base), **{top_cand.index[0]}** "
+                f"lidera com {_numero(int(top_cand.iloc[0]))} votos."
+            )
+        gov = votos[votos["cargo_cd"] == 3]
+        if not gov.empty and "situacao" in gov:
+            pendentes = gov[gov["situacao"].astype(str).str.upper().str.contains("TURNO")]["uf"].nunique()
+            if pendentes:
+                linhas.append(f"- Governador: {pendentes} UF(s) ainda com 2º turno pendente na base baixada.")
+    linhas.append("")
+    return linhas
+
+
+def _br_cruzamento(valor: float) -> str:
+    texto = f"{valor:,.2f}"
+    return texto.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def gerar_listas_eleitos(pacotes: dict[int, dict[str, pd.DataFrame]]) -> dict[int, Path]:
     """Gera as listas completas dos eleitos (todos os cargos) em markdown."""
     PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
@@ -310,6 +447,8 @@ def gerar(pacotes: dict[int, dict[str, pd.DataFrame]]) -> Path:
             partes.append(f"- Municípios com dados: **{_numero(municípios)}**")
             partes.append("")
 
+        partes.extend(_secao_painel_bi(ano, pacote))
+
         if ano == 2026 and not votos.empty:
             presidente = resultado_por_candidato(votos, 1)
             if not presidente.empty:
@@ -341,6 +480,41 @@ def gerar(pacotes: dict[int, dict[str, pd.DataFrame]]) -> Path:
                 partes.append("")
                 partes.append(_tabela_md(por_partido.reset_index(), ["partido", "municipio"]))
                 partes.append("")
+
+        if ano == 2024:
+            segundo = pacote.get("segundo_turno", pd.DataFrame())
+            cruzamento = pacote.get("cruzamento", pd.DataFrame())
+            disputas_txt = "as disputas de 2º turno para prefeito, com votos, percentual e margem de vitória"
+            if not segundo.empty and {"uf", "municipio"} <= set(segundo.columns):
+                n_disputas = segundo.groupby(["uf", "municipio"], observed=True).ngroups
+                disputas_txt = (
+                    f"os {len(segundo)} candidatos das {n_disputas} disputas de 2º turno para prefeito, "
+                    "com votos, percentual e margem de vitória"
+                )
+            lacuna_txt = ""
+            if not cruzamento.empty and "vencedor" in cruzamento.columns:
+                sem_votos = int(cruzamento["vencedor"].isna().sum())
+                if sem_votos:
+                    lacuna_txt = (
+                        f" o arquivo oficial de votação do TSE não traz votos de prefeito para "
+                        f"{sem_votos} municípios (lacuna do dado publicado)"
+                    )
+            partes.append("### Perfil do eleitorado e cruzamento TSE × IBGE")
+            partes.append("")
+            partes.append("O arquivo `perfil_eleitorado_2024.zip` contém o perfil socioeconômico dos eleitores aptos nas eleições municipais de 2024 (26 UFs, sem DF que não vota em eleições municipais). As principais agregações são salvas em `outputs/tabelas/perfil_eleitorado_2024.parquet`.")
+            partes.append("")
+            partes.append("**Cruzamento com o Censo 2022 (IBGE/SIDRA) e resultados da eleição:**")
+            partes.append("- `outputs/tabelas/idade_tse_ibge_2024.csv`: eleitores (TSE) × população 16+ (IBGE) por faixa etária comum, por UF e Brasil. Taxa de eleitores sobre população residente 16+.")
+            partes.append("- `outputs/tabelas/cruzamento_municipios_2024.csv`: apuração municipal (comparecimento, votos válidos/brancos/nulos) × renda per capita e população (IBGE) × resultado da eleição (candidatos, vencedor, % do vencedor, margem e flag de 2º turno), por município.")
+            partes.append(f"- `outputs/tabelas/segundo_turno_2024.csv`: {disputas_txt}.")
+            partes.append("")
+            partes.append("Tabelas de apoio: `outputs/tabelas/mais_votados_2024.csv` (top 20 nacional e top 10/UF para prefeitos e vereadores).")
+            partes.append("")
+            partes.append(
+                "Notas de cobertura: o Censo 2022 não possui correspondência para 3 municípios criados após o levantamento "
+                f"(MT Boa Esperança do Norte, RN Boa Saúde, RR São Luiz);{lacuna_txt}."
+            )
+            partes.append("")
 
         if not candidatos.empty and "genero" in candidatos:
             contagem = candidatos["genero"].str.upper().value_counts()
@@ -398,7 +572,7 @@ def gerar(pacotes: dict[int, dict[str, pd.DataFrame]]) -> Path:
     partes.append("- `outputs/eleitos_2024.md` e `outputs/eleitos_2026.md` — listas completas dos eleitos (nome, partido, idade, gênero);")
     partes.append("- `outputs/tabelas/eleitos_{ano}.csv` — mesmas listas em CSV;")
     partes.append("- `outputs/tabelas/partidos_nacional_{ano}.csv` — votos de todos os partidos no país;")
-    partes.append("- `outputs/tabelas/partidos_estado_{ano}.csv` — votos de todos os partidos por estado;")
+    partes.append("- `outputs/tabelas/partidos_uf_{ano}.csv` — votos de todos os partidos por estado;")
     partes.append("- `outputs/tabelas/votos_municipio_{ano}.parquet`, `candidatos_{ano}.parquet` — bases tratadas.")
     partes.append("")
 

@@ -306,7 +306,7 @@ def ler_cadastro_candidatos(caminho: Path, cargos: tuple[int, ...] | None = None
     return quadro
 
 
-def ler_detalhe_munzona(caminho: Path) -> pd.DataFrame:
+def ler_detalhe_munzona(caminho: Path, nivel: str = "uf") -> pd.DataFrame:
     caminho = Path(caminho)
     quadros = []
     for membro in membros_para_leitura(caminho):
@@ -325,30 +325,56 @@ def ler_detalhe_munzona(caminho: Path) -> pd.DataFrame:
         "QT_TOTAL_VOTOS_VALIDOS",
     ):
         quadro[coluna] = pd.to_numeric(quadro[coluna], errors="coerce").fillna(0).astype("int64")
+    chave_zona = ["SG_UF", "CD_MUNICIPIO", "NM_MUNICIPIO", "NR_ZONA"]
+    # aptos/secoes/comparecimento sao constantes por zona (repetidos em cada cargo/turno):
+    # max por zona resolve a repeticao sem escolher um cargo arbitrario.
     por_zona = (
-        quadro.groupby(["SG_UF", "CD_MUNICIPIO", "NM_MUNICIPIO", "NR_ZONA"], dropna=False, observed=True)
-        .first()
-        .reset_index()
-    )
-    por_uf = (
-        por_zona.groupby("SG_UF", observed=True)[
+        quadro.groupby(chave_zona, dropna=False, observed=True)[
             [
                 "QT_APTOS",
                 "QT_TOTAL_SECOES",
                 "QT_SECOES_NAO_INSTALADAS",
                 "QT_COMPARECIMENTO",
                 "QT_ABSTENCOES",
-                "QT_VOTOS_BRANCOS",
-                "QT_TOTAL_VOTOS_NULOS",
-                "QT_VOTOS",
-                "QT_TOTAL_VOTOS_VALIDOS",
             ]
         ]
+        .max()
+        .reset_index()
+    )
+    # votos/brancos/nulos/validos sao proprios de cada (zona, cargo, turno):
+    # somar sobre as linhas distintas da zona da o total da apuracao municipal.
+    por_zona = por_zona.merge(
+        quadro.groupby(chave_zona, dropna=False, observed=True)[
+            ["QT_VOTOS_BRANCOS", "QT_TOTAL_VOTOS_NULOS", "QT_VOTOS", "QT_TOTAL_VOTOS_VALIDOS"]
+        ]
+        .sum()
+        .reset_index(),
+        on=chave_zona,
+    )
+    colunas_soma = [
+        "QT_APTOS",
+        "QT_TOTAL_SECOES",
+        "QT_SECOES_NAO_INSTALADAS",
+        "QT_COMPARECIMENTO",
+        "QT_ABSTENCOES",
+        "QT_VOTOS_BRANCOS",
+        "QT_TOTAL_VOTOS_NULOS",
+        "QT_VOTOS",
+        "QT_TOTAL_VOTOS_VALIDOS",
+    ]
+    if nivel == "municipio":
+        agrupamento = ["SG_UF", "CD_MUNICIPIO", "NM_MUNICIPIO"]
+        rotulos = {"SG_UF": "uf", "CD_MUNICIPIO": "municipio_cd", "NM_MUNICIPIO": "municipio"}
+    else:
+        agrupamento = ["SG_UF"]
+        rotulos = {"SG_UF": "uf"}
+    quadro = (
+        por_zona.groupby(agrupamento, dropna=False, observed=True)[colunas_soma]
         .sum()
         .reset_index()
         .rename(
             columns={
-                "SG_UF": "uf",
+                **rotulos,
                 "QT_APTOS": "eleitores",
                 "QT_TOTAL_SECOES": "secoes_totais",
                 "QT_SECOES_NAO_INSTALADAS": "secoes_nao_instaladas",
@@ -361,13 +387,20 @@ def ler_detalhe_munzona(caminho: Path) -> pd.DataFrame:
             }
         )
     )
-    por_uf["pct_comparecimento"] = 100.0 * por_uf["comparecimento"] / por_uf["eleitores"].replace(0, pd.NA)
-    por_uf["pct_abstencao"] = 100.0 * por_uf["abstencao"] / por_uf["eleitores"].replace(0, pd.NA)
-    por_uf["pct_secoes"] = 100.0 * (
-        por_uf["secoes_totais"] - por_uf["secoes_nao_instaladas"]
-    ) / por_uf["secoes_totais"].replace(0, pd.NA)
-    log(f"  [ok] detalhe da apuracao por UF: {len(por_uf)} UFs")
-    return por_uf.sort_values("uf").reset_index(drop=True)
+    quadro["pct_comparecimento"] = 100.0 * quadro["comparecimento"] / quadro["eleitores"].replace(0, pd.NA)
+    quadro["pct_abstencao"] = 100.0 * quadro["abstencao"] / quadro["eleitores"].replace(0, pd.NA)
+    quadro["pct_secoes"] = 100.0 * (
+        quadro["secoes_totais"] - quadro["secoes_nao_instaladas"]
+    ) / quadro["secoes_totais"].replace(0, pd.NA)
+    if nivel == "municipio":
+        quadro["municipio_cd"] = pd.to_numeric(quadro["municipio_cd"], errors="coerce").astype("Int64")
+        quadro["municipio"] = quadro["municipio"].astype(str).str.strip()
+        ordenacao = ["uf", "municipio"]
+        log(f"  [ok] detalhe da apuracao por municipio: {len(quadro):,} municipios")
+    else:
+        ordenacao = ["uf"]
+        log(f"  [ok] detalhe da apuracao por UF: {len(quadro)} UFs")
+    return quadro.sort_values(ordenacao).reset_index(drop=True)
 
 
 def ler_votacao_partido(caminho: Path, cargos: tuple[int, ...] | None = None) -> pd.DataFrame:
@@ -494,4 +527,76 @@ def ler_votacao_secao(
     for coluna in quadro.select_dtypes(include="object").columns:
         quadro[coluna] = quadro[coluna].astype("category")
     log(f"  [ok] votacao por secao agregada: {len(quadro):,} linhas")
+    return quadro
+
+
+COLUNAS_PERFIL = [
+    "SG_UF",
+    "DS_GENERO",
+    "DS_FAIXA_ETARIA",
+    "DS_GRAU_ESCOLARIDADE",
+    "DS_ESTADO_CIVIL",
+    "DS_RACA_COR",
+    "DS_IDENTIDADE_GENERO",
+    "QT_ELEITORES",
+]
+
+DIMENSOES_PERFIL = {
+    "DS_GENERO": "genero",
+    "DS_FAIXA_ETARIA": "faixa_etaria",
+    "DS_GRAU_ESCOLARIDADE": "grau_escolaridade",
+    "DS_ESTADO_CIVIL": "estado_civil",
+    "DS_RACA_COR": "raca",
+    "DS_IDENTIDADE_GENERO": "identidade_genero",
+}
+
+VALORES_DESCARTADOS_PERFIL = {"", "-1", "NÃO INFORMADO", "INVÁLIDA"}
+
+
+def ler_perfil_eleitorado(caminho: Path, chunksize: int = 1_000_000) -> pd.DataFrame:
+    """Agrega o perfil do eleitorado em formato longo (uf, dimensao, categoria, eleitores)."""
+    caminho = Path(caminho)
+    membros = membros_csv(caminho)
+    brasil = [nome for nome in membros if nome.upper().endswith("_BRASIL.CSV")]
+    # sem o consolidado do Brasil, processa cada membro (UF) separadamente para
+    # nao misturar o total nacional com os totais estaduais.
+    selecao = brasil[:1] if brasil else membros
+    if not brasil:
+        log("  [aviso] perfil sem membro BRASIL; agregando membro a membro")
+    partes: list[pd.DataFrame] = []
+    total = 0
+    for membro in selecao:
+        for pedaco in iterar_csvs(caminho, usecols=COLUNAS_PERFIL, chunksize=chunksize, membro=membro):
+            pedaco["QT_ELEITORES"] = (
+                pd.to_numeric(pedaco["QT_ELEITORES"], errors="coerce").fillna(0).astype("int64")
+            )
+            for coluna, dimensao in DIMENSOES_PERFIL.items():
+                if coluna not in pedaco:
+                    continue
+                sub = pedaco[["SG_UF", coluna, "QT_ELEITORES"]].copy()
+                rotulo = sub[coluna].astype(str).str.strip()
+                descartar = rotulo.str.upper().isin(VALORES_DESCARTADOS_PERFIL)
+                sub = sub[~descartar].copy()
+                sub["categoria"] = rotulo[~descartar]
+                sub = sub.drop(columns=[coluna]).rename(columns={"SG_UF": "uf"})
+                sub["dimensao"] = dimensao
+                partes.append(
+                    sub.groupby(["uf", "dimensao", "categoria"], observed=True, dropna=False)[
+                        "QT_ELEITORES"
+                    ]
+                    .sum()
+                    .reset_index()
+                )
+            total += len(pedaco)
+            log(f"  [leitura] {membro}: {total:,} linhas processadas")
+    if not partes:
+        return pd.DataFrame(columns=["uf", "dimensao", "categoria", "eleitores"])
+    quadro = (
+        pd.concat(partes, ignore_index=True)
+        .groupby(["uf", "dimensao", "categoria"], observed=True, dropna=False)["QT_ELEITORES"]
+        .sum()
+        .reset_index()
+        .rename(columns={"QT_ELEITORES": "eleitores"})
+    )
+    log(f"  [ok] perfil do eleitorado: {len(quadro):,} agregados")
     return quadro

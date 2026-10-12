@@ -1,0 +1,18 @@
+[project]
+name = "brazil-tse-data-science"
+version = "0.1.0"
+description = "Pipeline de dados eleitorais do TSE (2024/2026) com app desktop de mapa, candidatos e chat."
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.2,<3",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "pyarrow==21.0.0",  # pin testado: o Smart App Control bloqueia o pyarrow 26
+    "PySide6>=6.6",
+    "shapely>=2.0",
+]
+
+[tool.uv]
+package = false
