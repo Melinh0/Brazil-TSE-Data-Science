@@ -38,14 +38,19 @@ class PainelEleitos(QWidget):
         )
         self._tabela.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         cabecalho = self._tabela.horizontalHeader()
-        cabecalho.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Cargo e Partido: ajustam ao conteúdo
         cabecalho.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         cabecalho.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        # Votos no escopo: ajustam ao conteúdo
         cabecalho.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        cabecalho.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        # 'Situação' tem textos longos ('ELEITO · Nº mais votado no município'):
-        # a coluna se ajusta ao conteúdo em vez de cortar
-        cabecalho.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        # Eleito / líder: estica para preencher espaço
+        cabecalho.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        # Eleito em e Situação: interativos com largura mínima (scroll horizontal se necessário)
+        cabecalho.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        cabecalho.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+        self._tabela.setColumnWidth(4, 220)
+        self._tabela.setColumnWidth(5, 280)
+        self._tabela.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
