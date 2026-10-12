@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QCoreApplication
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -391,7 +391,7 @@ class JanelaPrincipal(QMainWindow):
         estado = ler_estado()
         if estado.get("modo_escuro"):
             self._acao_escuro.setChecked(True)  # dispara _alternar_escuro
-        self._atualizar_tudo()
+        self._atualizar_tudo(carregar_todas_abas=True)
 
     def _criar_ranking(self) -> QWidget:
         quadro = QWidget()
@@ -501,8 +501,7 @@ class JanelaPrincipal(QMainWindow):
 
     def _trocar_ano(self) -> None:
         self.ano = int(self.combo_ano.currentData())
-        self._carregar_cargos()
-        self._atualizar_tudo()
+        self._atualizar_tudo(carregar_todas_abas=True)
 
     def _trocar_cargo(self) -> None:
         if self._atualizando:
@@ -511,13 +510,11 @@ class JanelaPrincipal(QMainWindow):
         if dados is None:
             return
         self.cargo = int(dados)
-        self._carregar_indicadores()
-        self._atualizar_mapa()
-        self._atualizar_eleitos()
-        self._atualizar_secoes()
-        self._atualizar_candidatos()
-        self._atualizar_contexto()
-        self._atualizar_galeria()
+        # invalida cache de eleitos para este escopo/ano (todas as chaves de cargo)
+        for chave in list(self.fonte._cache_eleitos.keys()):
+            if chave[:3] == (self.escopo.tipo, self.escopo.codigo, self.ano):
+                self.fonte._cache_eleitos.pop(chave, None)
+        self._atualizar_tudo(carregar_todas_abas=True)
 
     def _trocar_indicador(self) -> None:
         if self._atualizando:
@@ -561,13 +558,18 @@ class JanelaPrincipal(QMainWindow):
         if escopo == self.escopo:
             return
         self.escopo = escopo
-        self._atualizar_tudo()
+        self._atualizar_tudo(carregar_todas_abas=True)
 
     def _clicar_migalha(self, escopo: Escopo) -> None:
         self.mudar_escopo(escopo)
 
     # --------------------------------------------------------- atualizações
-    def _atualizar_tudo(self, gerar_figuras: bool = True) -> None:
+    def _atualizar_tudo(
+        self, gerar_figuras: bool = True, carregar_todas_abas: bool = False
+    ) -> None:
+        """Atualiza o essencial (mapa, resumo, galeria).
+        Se `carregar_todas_abas=True`, carrega também todas as abas (usado na inicialização e selftest).
+        Caso contrário, carrega apenas a aba atual (lazy loading)."""
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self._carregar_cargos()
@@ -575,16 +577,37 @@ class JanelaPrincipal(QMainWindow):
             self._atualizar_migalha()
             self._atualizar_mapa()
             self._atualizar_resumo()
-            self._atualizar_eleitos()
-            self._atualizar_secoes()
-            self._atualizar_candidatos()
-            self._atualizar_busca_municipio()
             self._atualizar_galeria(gerar=gerar_figuras)
-            self._atualizar_contexto()
             self._atualizar_status()
+            if carregar_todas_abas:
+                self._atualizar_eleitos()
+                self._atualizar_secoes()
+                self._atualizar_candidatos()
+                self._atualizar_busca_municipio()
+                self._atualizar_contexto()
+            else:
+                self._atualizar_aba_atual()
         finally:
             QApplication.restoreOverrideCursor()
+        # garante que atualizações de UI (tabelas, etc.) sejam processadas
+        QCoreApplication.processEvents()
         self._disparar_pre_carregamentos()
+
+    def _atualizar_aba_atual(self) -> None:
+        """Carrega dados da aba visível sob demanda."""
+        widget = self.abas.currentWidget()
+        if widget is self.painel_eleitos:
+            self._atualizar_eleitos()
+            self._atualizar_contexto()
+        elif widget is self.painel_secoes:
+            self._atualizar_secoes()
+        elif widget is self.tabela_candidatos:
+            self._atualizar_candidatos()
+            self._atualizar_busca_municipio()
+        elif widget is self.painel_chat:
+            self._atualizar_contexto()
+        elif widget is self._aba_resumo:
+            self._atualizar_contexto()
 
     def _atualizar_galeria(self, gerar: bool = True) -> None:
         """Lista PNGs prontos (rápido) e dispara a geração dos faltantes em worker."""
@@ -989,7 +1012,8 @@ class JanelaPrincipal(QMainWindow):
         self._trabalhador_bairros.start()
 
     def _aba_trocada(self, indice: int) -> None:
-        """Ao abrir a aba Seções, dispara o download/extração pendente do ano."""
+        """Ao trocar de aba, carrega os dados da aba (lazy loading)."""
+        self._atualizar_aba_atual()
         if self.abas.widget(indice) is self.painel_secoes:
             self._disparar_extracao_secoes()
 

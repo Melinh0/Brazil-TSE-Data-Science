@@ -181,8 +181,7 @@ class MapaView(QGraphicsView):
         if not self._rotulos_tela:
             return
         pintor = QPainter(self.viewport())
-        fonte = QFont("Segoe UI")
-        fonte.setPixelSize(12)
+        fonte = QFont("Segoe UI", 12)
         fonte.setWeight(QFont.Weight.Bold)
         pintor.setFont(fonte)
         metrica = pintor.fontMetrics()

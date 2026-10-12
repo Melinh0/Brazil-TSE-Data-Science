@@ -515,21 +515,21 @@ class FonteDados:
         disponível e ninguém marcado como ELEITO), devolve os 2 líderes com
         situacao='2º turno a disputar'.
         """
-        chave = (escopo.tipo, escopo.codigo, ano)
+        chave = (escopo.tipo, escopo.codigo, ano, cargo_cd)
         if chave in self._cache_eleitos:
-            quadro = self._cache_eleitos[chave]
-        else:
-            quadro = self._calcular_eleitos(escopo, ano)
-            self._cache_eleitos[chave] = quadro
-        if cargo_cd is not None and not quadro.empty:
-            quadro = quadro[quadro["cargo_cd"] == int(cargo_cd)].reset_index(drop=True)
+            return self._cache_eleitos[chave]
+        quadro = self._calcular_eleitos(escopo, ano, cargo_cd)
+        self._cache_eleitos[chave] = quadro
         return quadro
 
-    def _calcular_eleitos(self, escopo: Escopo, ano: int) -> pd.DataFrame:
+    def _calcular_eleitos(
+        self, escopo: Escopo, ano: int, cargo_cd: int | None = None
+    ) -> pd.DataFrame:
         votos = self.votos(ano)
         linhas: list[dict] = []
         ordem_escopo = ORDEM_UNIDADE[UNIDADE_ESCOPO[escopo.tipo]]
-        for cargo in self.cargos(ano):
+        cargos_iter = [cargo_cd] if cargo_cd is not None else self.cargos(ano)
+        for cargo in cargos_iter:
             decisao, onde = self._escopo_decisao(escopo, ano, cargo)
             if decisao.empty:
                 continue
@@ -591,9 +591,16 @@ class FonteDados:
                 continue
             base = votos[(votos["cargo_cd"] == cargo) & self.mascara(votos, escopo)]
             votos_escopo = base.groupby("candidato_sq", observed=True)["votos"].sum()
+            # para escopo municipal, usar o nome do município do escopo como fallback
+            municipio_escopo = ""
+            if escopo.tipo == TIPO_MUNICIPIO and "/" in escopo.titulo:
+                municipio_escopo = escopo.titulo.split("/")[0]
             for posicao, (_, vencedor) in enumerate(vencedores.iterrows(), start=1):
                 sq = str(vencedor["candidato_sq"])
-                local = locais.get(sq) or ("Brasil" if cargo == 1 else onde)
+                local = (
+                    locais.get(sq)
+                    or ("Brasil" if cargo == 1 else (municipio_escopo or onde))
+                )
                 linhas.append(
                     {
                         "cargo_cd": cargo,
@@ -603,8 +610,12 @@ class FonteDados:
                         "votos_escopo": int(votos_escopo.get(sq, 0)),
                         "eleito_em": (
                             "aguarda 2º turno (líder do 1º turno)"
-                            if pendente
-                            else local
+                            if pendente and posicao == 1
+                            else (
+                                "aguarda 2º turno (2º colocado no 1º turno)"
+                                if pendente
+                                else local
+                            )
                         ),
                         "situacao": (
                             f"{posicao}º colocado no 1º turno"

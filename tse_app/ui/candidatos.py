@@ -40,12 +40,12 @@ class _ItemOrdenavel(QTableWidgetItem):
     def __lt__(self, outro: QTableWidgetItem) -> bool:
         a = self.data(Qt.ItemDataRole.UserRole)
         b = outro.data(Qt.ItemDataRole.UserRole)
-        if a is None or b is None:
-            return super().__lt__(outro)
-        try:
-            return float(a) < float(b)
-        except (TypeError, ValueError):
-            return super().__lt__(outro)
+        if a is not None and b is not None:
+            try:
+                return float(a) < float(b)
+            except (TypeError, ValueError):
+                pass
+        return self.text() < outro.text()
 
 
 class TabelaCandidatos(QWidget):
